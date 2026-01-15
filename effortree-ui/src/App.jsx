@@ -1,11 +1,16 @@
 import React from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
+
 import AppShell from "@/app/AppShell.jsx";
 import Login from "@/pages/Login.jsx";
 import Signup from "@/pages/Signup.jsx";
 import SignupProfile from "@/pages/SignupProfile.jsx";
 import HomeStudent from "@/pages/HomeStudent";
 import QuestDashboard from "@/pages/Quest.jsx";
+import AiTutorPanel from "@/pages/AiTutor";
+import LogPage from "@/pages/Logs";
+import AnalyticPage from "@/pages/Analytic.jsx"; // ✅ 이 줄
+import ParentCheckinPage from "@/pages/Parents.jsx";
 
 export default function App() {
   return (
@@ -17,6 +22,10 @@ export default function App() {
         <Route path="/signup/profile" element={<SignupProfile />} />
         <Route path="/home" element={<HomeStudent />} />
         <Route path="/quest" element={<QuestDashboard />} />
+        <Route path="/tutor" element={<AiTutorPanel />} />
+        <Route path="/log" element={<LogPage />} />
+        <Route path="/analytic" element={<AnalyticPage />} /> {/* ✅ 추가 */}
+        <Route path="/parent-checkin" element={<ParentCheckinPage />} />
       </Route>
     </Routes>
   );

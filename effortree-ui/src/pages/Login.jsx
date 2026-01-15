@@ -29,7 +29,7 @@ export default function Login() {
 
   const handleLogin = async () => {
     try {
-      const res = await api.post("/login", {
+      const res = await api.post("/users/login", {
         email,
         password: pw,
       });
@@ -43,7 +43,7 @@ export default function Login() {
         localStorage.setItem("userId", String(userId));
 
         alert("로그인 성공!");
-        nav("/home");
+        nav("/home"); // ✅ 로그인 후 부모 체크인 페이지로 이동
       } else {
         alert("로그인 실패! 이메일 또는 비밀번호를 확인하세요.");
       }
