@@ -300,11 +300,11 @@ export default function QuestDashboard() {
     if (!userId || Number.isNaN(userId)) return;
 
     try {
-      const res = await api.get("/quests/", { params: { userId } });
+      const res = await api.get("/quests", { params: { userId } });
       const data = Array.isArray(res.data) ? res.data : [];
       setQuests(data.map(toUiQuest));
     } catch (e) {
-      console.error("❌ GET /quests/ failed:", e);
+      console.error("❌ GET /quests failed:", e);
     }
   }, [toUiQuest]);
 
@@ -382,7 +382,7 @@ export default function QuestDashboard() {
       }
 
       try {
-        await api.post("/quests/", {
+        await api.post("/quests", {
           userId,
           subject: info.subject,
           title: info.title,
@@ -393,7 +393,7 @@ export default function QuestDashboard() {
         });
         await loadQuests();
       } catch (e) {
-        console.error("❌ POST /quests/ failed:", e);
+        console.error("❌ POST /quests failed:", e);
         alert("퀘스트 생성 실패!");
       }
     },
