@@ -1,10 +1,13 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { api } from "@/lib/api.js";
 
 /** -----------------------------
  * utils
  * ----------------------------- */
+const API_ORIGIN = "http://168.107.21.74:8000";
+
 function cn(...args) {
   return args.filter(Boolean).join(" ");
 }
@@ -12,6 +15,13 @@ function cn(...args) {
 function safeStr(v, fallback = "") {
   const s = String(v ?? "").trim();
   return s.length ? s : fallback;
+}
+
+function withApiOrigin(url) {
+  const s = safeStr(url, "");
+  if (!s) return null;
+  if (s.startsWith("http://") || s.startsWith("https://")) return s;
+  return `${API_ORIGIN}${s.startsWith("/") ? "" : "/"}${s}`;
 }
 
 function formatTimeLabel(dateLike) {
@@ -24,17 +34,6 @@ function formatTimeLabel(dateLike) {
 
 function makeId(prefix = "id") {
   return `${prefix}-${Math.random().toString(16).slice(2)}-${Date.now()}`;
-}
-
-function deriveNicknameFromEmail(email) {
-  const base = safeStr(email).split("@")[0] || "Student";
-  const nice = base
-    .replace(/[._-]+/g, " ")
-    .split(" ")
-    .filter(Boolean)
-    .map((w) => w[0]?.toUpperCase() + w.slice(1))
-    .join(" ");
-  return nice || "Student";
 }
 
 /** -----------------------------
@@ -201,7 +200,7 @@ function Select({ value, onChange, options, placeholder = "Select…" }) {
 /** -----------------------------
  * Chat UI
  * ----------------------------- */
-function ChatBubble({ side, tone = "normal", text, time }) {
+function ChatBubble({ side, tone = "normal", text, time, imageUrl }) {
   const isLeft = side === "left";
 
   const bubbleClass =
@@ -211,16 +210,34 @@ function ChatBubble({ side, tone = "normal", text, time }) {
       ? "bg-white/90 border-black/10 text-[#0B2B5B]"
       : "bg-[#B7E27A]/60 border-black/10 text-[#0B2B5B]";
 
+  const resolvedImg = imageUrl
+    ? imageUrl.startsWith("blob:")
+      ? imageUrl
+      : withApiOrigin(imageUrl)
+    : null;
+
   return (
     <div className={cn("flex", isLeft ? "justify-start" : "justify-end")}>
       <div className="max-w-[min(86%,640px)]">
         <div
           className={cn("rounded-3xl px-5 py-4 border shadow-sm", bubbleClass)}
         >
+          {resolvedImg ? (
+            <div className="mb-3 overflow-hidden rounded-2xl border border-black/10 bg-white/60 p-2">
+              {/* ✅ 이미지 너무 커지는 문제 해결: contain + max-h */}
+              <img
+                src={resolvedImg}
+                alt="upload"
+                className="w-full max-h-[180px] object-contain"
+              />
+            </div>
+          ) : null}
+
           <div className="whitespace-pre-wrap text-[14px] leading-relaxed font-semibold">
             {text}
           </div>
         </div>
+
         {time ? (
           <div
             className={cn(
@@ -264,120 +281,150 @@ function SuggestionBtn({ label, onClick }) {
   );
 }
 
+function InlineBadge({ children, tone = "neutral" }) {
+  const cls =
+    tone === "err"
+      ? "bg-red-500/10 text-red-700 border-red-500/15"
+      : tone === "ok"
+      ? "bg-emerald-500/10 text-emerald-700 border-emerald-500/15"
+      : "bg-black/5 text-black/55 border-black/10";
+
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full border px-3 py-1 text-[11px] font-extrabold",
+        cls
+      )}
+    >
+      {children}
+    </span>
+  );
+}
+
 /** -----------------------------
- * Main Page (SUDO)
+ * Main Page (REAL API)
  * ----------------------------- */
 export default function ParentCheckinPage() {
-  // pretend logged in
+  // parent id from localStorage
   const [userId, setUserId] = useState(null);
 
   // children list + selected
-  const [children, setChildren] = useState(() => [
-    // initial dummy (feel free to delete)
-    { childUserId: 134, nickname: "Aiperi", email: "aiperi@school.com" },
-    { childUserId: 137, nickname: "Minsu", email: "minsu@student.com" },
-  ]);
-  const [activeChildId, setActiveChildId] = useState(134);
+  const [children, setChildren] = useState([]);
+  const [childrenLoading, setChildrenLoading] = useState(false);
+  const [childrenErr, setChildrenErr] = useState("");
+  const [activeChildId, setActiveChildId] = useState(null);
 
   // tabs
   const [tab, setTab] = useState("overview"); // overview | gift | chat
 
-  // connect child modal (sudo)
+  // connect child modal
   const [connectOpen, setConnectOpen] = useState(false);
-  const [connectEmail, setConnectEmail] = useState("");
-  const [preview, setPreview] = useState(null); // { childUserId, nickname, email }
+  const [connectChildId, setConnectChildId] = useState("");
+  const [connectToEmail, setConnectToEmail] = useState("");
   const [connectLoading, setConnectLoading] = useState(false);
   const [connectErr, setConnectErr] = useState("");
 
-  // per-child "interpretation" data (sudo)
-  const [guidanceByChild, setGuidanceByChild] = useState(() => ({
-    134: {
-      current_guidance:
-        "The recent learning flow appears generally steady, even with natural variation.\nShort pauses are often part of a healthy rhythm rather than a concern.",
-      interpretation_rationale: [
-        "Learning engagement naturally fluctuates",
-        "Brief slowdowns do not necessarily indicate disengagement",
-        "Overall flow matters more than short-term changes",
-      ],
-    },
-    137: {
-      current_guidance:
-        "Momentum looks stable.\nIf there’s a pause, it’s likely a reset — not a drop-off.",
-      interpretation_rationale: [
-        "Continuity matters more than intensity",
-        "Small recovery cycles are healthy",
-        "The direction remains intact",
-      ],
-    },
-  }));
+  // interpretation (per child)
+  const [guidanceByChild, setGuidanceByChild] = useState({});
+  const [interpretLoading, setInterpretLoading] = useState(false);
+  const [interpretErr, setInterpretErr] = useState("");
 
-  const [phase] = useState({
-    title: "Current phase",
-    main: "A phase of quiet rebuilding.",
-    lines: [
-      "Effort hasn’t stopped — it has softened.",
-      "Direction remains intact.",
-    ],
-  });
+  // gift (per child)
+  const [giftByChild, setGiftByChild] = useState({});
+  const [giftLoading, setGiftLoading] = useState(false);
+  const [giftErr, setGiftErr] = useState("");
+  const fileInputRef = useRef(null);
+  const [giftFileByChild, setGiftFileByChild] = useState({}); // { [childId]: File }
 
-  // gift (local preview only)
-  const [gift, setGift] = useState({
-    caption:
-      "This is not a reward for performance.\nIt represents trust kept over time.",
-    imageUrl: null,
-  });
-
-  // per-child chat history (sudo)
-  const [chatByChild, setChatByChild] = useState(() => ({
-    134: [
-      {
-        id: "sys-0",
-        role: "assistant",
-        tone: "system",
-        content:
-          "I don’t see raw data.\nI only help explain what has already been interpreted.",
-        createdAt: new Date().toISOString(),
-      },
-      {
-        id: "a-0",
-        role: "assistant",
-        tone: "normal",
-        content:
-          "You might be wondering whether now is the right time to step in.\n\nBased on the current situation, the system believes it’s okay to wait.",
-        createdAt: new Date().toISOString(),
-      },
-    ],
-    137: [
-      {
-        id: "sys-0",
-        role: "assistant",
-        tone: "system",
-        content:
-          "I don’t see raw data.\nI only help explain what has already been interpreted.",
-        createdAt: new Date().toISOString(),
-      },
-      {
-        id: "a-0",
-        role: "assistant",
-        tone: "normal",
-        content:
-          "From a broader view, there’s no signal that requires immediate intervention.\n\nBeing calmly available is enough for now.",
-        createdAt: new Date().toISOString(),
-      },
-    ],
-  }));
-
+  // chat (per child)
+  const [chatByChild, setChatByChild] = useState({});
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
+  const [chatErr, setChatErr] = useState("");
   const listRef = useRef(null);
 
+  // chat attachment
+  const chatFileRef = useRef(null);
+  const [chatImageByChild, setChatImageByChild] = useState({}); // { [childId]: File }
+  const [chatImagePreviewByChild, setChatImagePreviewByChild] = useState({}); // { [childId]: objectURL }
+
+  const sysMessage = useMemo(
+    () => ({
+      id: "sys-0",
+      role: "assistant",
+      tone: "system",
+      content:
+        "I don’t see raw data.\nI only help explain what has already been interpreted.",
+      createdAt: new Date().toISOString(),
+    }),
+    []
+  );
+
+  /** -----------------------------
+   * API: fetch children
+   * GET /parents/children?parentId=
+   * ----------------------------- */
+  const fetchChildren = async (parentId) => {
+    if (!parentId) return;
+
+    setChildrenLoading(true);
+    setChildrenErr("");
+
+    try {
+      const res = await api.get("/parents/children", { params: { parentId } });
+      const list = Array.isArray(res.data?.children) ? res.data.children : [];
+
+      const mapped = list
+        .map((c) => ({
+          childUserId: Number(c?.userId),
+          nickname: safeStr(c?.nickname, `Child #${c?.userId}`),
+          email: safeStr(c?.email, ""),
+          role: safeStr(c?.role, ""),
+        }))
+        .filter((c) => Number.isFinite(c.childUserId));
+
+      setChildren(mapped);
+
+      setActiveChildId((prev) => {
+        if (prev && mapped.some((x) => x.childUserId === prev)) return prev;
+        return mapped[0]?.childUserId ?? null;
+      });
+
+      // seed chat if absent
+      setChatByChild((m) => {
+        const next = { ...m };
+        for (const c of mapped) {
+          if (!next[c.childUserId]) next[c.childUserId] = [sysMessage];
+        }
+        return next;
+      });
+    } catch (e) {
+      setChildrenErr(
+        e?.response?.data?.message ||
+          e?.response?.data?.detail ||
+          e?.message ||
+          "Failed to load children."
+      );
+      setChildren([]);
+      setActiveChildId(null);
+    } finally {
+      setChildrenLoading(false);
+    }
+  };
+
+  /** bootstrap userId */
   useEffect(() => {
     const raw = localStorage.getItem("userId");
-    const parsed = raw ? Number(raw) : 777; // fallback dummy
-    setUserId(Number.isFinite(parsed) ? parsed : 777);
+    const parsed = raw ? Number(raw) : null;
+    const pid = Number.isFinite(parsed) ? parsed : null;
+
+    setUserId(pid);
+
+    if (pid) fetchChildren(pid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // scroll chat when messages or tab changes
+  /** scroll chat when messages/tab changes */
   useEffect(() => {
     if (tab !== "chat") return;
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
@@ -405,6 +452,56 @@ export default function ParentCheckinPage() {
     [children, activeChildId]
   );
 
+  /** -----------------------------
+   * API: interpretation fetch (overview)
+   * GET /parents/interpretation?childId=
+   * ----------------------------- */
+  useEffect(() => {
+    if (!activeChildId) return;
+    if (tab !== "overview") return;
+
+    let cancelled = false;
+
+    (async () => {
+      setInterpretLoading(true);
+      setInterpretErr("");
+
+      try {
+        const res = await api.get("/parents/interpretation", {
+          params: { childId: activeChildId },
+        });
+
+        if (cancelled) return;
+
+        setGuidanceByChild((m) => ({
+          ...m,
+          [activeChildId]: {
+            current_guidance: safeStr(res.data?.current_guidance),
+            interpretation_rationale: Array.isArray(
+              res.data?.interpretation_rationale
+            )
+              ? res.data.interpretation_rationale
+              : [],
+          },
+        }));
+      } catch (e) {
+        if (cancelled) return;
+        setInterpretErr(
+          e?.response?.data?.message ||
+            e?.response?.data?.detail ||
+            e?.message ||
+            "Failed to load interpretation."
+        );
+      } finally {
+        if (!cancelled) setInterpretLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeChildId, tab]);
+
   const assessment = useMemo(() => {
     const g = guidanceByChild[activeChildId];
     return {
@@ -430,149 +527,318 @@ export default function ParentCheckinPage() {
         ];
   }, [guidanceByChild, activeChildId]);
 
-  const messages = useMemo(() => {
-    return Array.isArray(chatByChild[activeChildId])
-      ? chatByChild[activeChildId]
-      : [];
-  }, [chatByChild, activeChildId]);
+  /** -----------------------------
+   * API: gift fetch (gift tab)
+   * GET /parents/gift?childId=
+   * ----------------------------- */
+  useEffect(() => {
+    if (!activeChildId) return;
+    if (tab !== "gift") return;
+
+    let cancelled = false;
+
+    (async () => {
+      setGiftLoading(true);
+      setGiftErr("");
+
+      try {
+        const res = await api.get("/parents/gift", {
+          params: { childId: activeChildId },
+        });
+
+        if (cancelled) return;
+
+        setGiftByChild((m) => ({
+          ...m,
+          [activeChildId]: {
+            imageUrl: withApiOrigin(res.data?.imageUrl),
+            caption: safeStr(res.data?.message, ""),
+            updated_at: safeStr(res.data?.updated_at, ""),
+          },
+        }));
+      } catch (e) {
+        if (cancelled) return;
+
+        setGiftByChild((m) => ({
+          ...m,
+          [activeChildId]: {
+            imageUrl: null,
+            caption: "",
+            updated_at: "",
+          },
+        }));
+      } finally {
+        if (!cancelled) setGiftLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeChildId, tab]);
+
+  const gift = useMemo(() => {
+    const g = giftByChild[activeChildId];
+    return {
+      imageUrl: g?.imageUrl ?? null,
+      caption:
+        g?.caption ??
+        "This is not a reward for performance.\nIt represents trust kept over time.",
+      updated_at: g?.updated_at ?? "",
+    };
+  }, [giftByChild, activeChildId]);
 
   /** -----------------------------
-   * Connect child (SUDO)
+   * Connect child (REAL API)
+   * POST /parents/connect { childId, connectToEmail }
    * ----------------------------- */
   const openConnect = () => {
     setConnectOpen(true);
-    setConnectEmail("");
-    setPreview(null);
+    setConnectChildId("");
+    setConnectToEmail("");
     setConnectErr("");
     setConnectLoading(false);
   };
-
   const closeConnect = () => setConnectOpen(false);
 
-  const doPreview = async () => {
-    const email = safeStr(connectEmail);
-    if (!email) return;
-    setConnectLoading(true);
-    setConnectErr("");
-    setPreview(null);
-
-    // fake delay
-    await new Promise((r) => setTimeout(r, 450));
-
-    // super naive validation
-    if (!email.includes("@") || !email.includes(".")) {
-      setConnectErr("That doesn’t look like a valid email.");
-      setConnectLoading(false);
-      return;
-    }
-
-    // pretend we "found" a student id
-    const childUserId = 100 + Math.floor(Math.random() * 900);
-    const nickname = deriveNicknameFromEmail(email);
-    setPreview({ childUserId, nickname, email });
-    setConnectLoading(false);
-  };
-
   const doLink = async () => {
-    if (!preview?.childUserId) return;
+    const cid = Number(connectChildId);
+    const email = safeStr(connectToEmail);
+
+    if (!Number.isFinite(cid) || cid <= 0) {
+      setConnectErr("Please enter a valid childId.");
+      return;
+    }
+    if (!email || !email.includes("@")) {
+      setConnectErr("Please enter a valid email.");
+      return;
+    }
 
     setConnectLoading(true);
     setConnectErr("");
 
-    // fake delay
-    await new Promise((r) => setTimeout(r, 350));
+    try {
+      await api.post("/parents/connect", {
+        childId: cid,
+        connectToEmail: email,
+      });
 
-    const exists = children.some((c) => c.childUserId === preview.childUserId);
-    if (exists) {
-      setConnectErr("Already linked.");
+      await fetchChildren(userId);
+
+      setActiveChildId(cid);
+      setTab("overview");
+      closeConnect();
+    } catch (e) {
+      setConnectErr(
+        e?.response?.data?.message ||
+          e?.response?.data?.detail ||
+          e?.message ||
+          "Failed to connect."
+      );
+    } finally {
       setConnectLoading(false);
-      return;
     }
-
-    setChildren((prev) => [
-      ...prev,
-      {
-        childUserId: preview.childUserId,
-        nickname: preview.nickname,
-        email: preview.email,
-      },
-    ]);
-
-    // seed interpretation + chat for new child
-    setGuidanceByChild((m) => ({
-      ...m,
-      [preview.childUserId]: {
-        current_guidance:
-          "This is a demo interpretation.\nOnce backend is connected, this will reflect real guidance.",
-        interpretation_rationale: [
-          "Demo rationale item 1",
-          "Demo rationale item 2",
-          "Demo rationale item 3",
-        ],
-      },
-    }));
-
-    setChatByChild((m) => ({
-      ...m,
-      [preview.childUserId]: [
-        {
-          id: makeId("sys"),
-          role: "assistant",
-          tone: "system",
-          content:
-            "I don’t see raw data.\nI only help explain what has already been interpreted.",
-          createdAt: new Date().toISOString(),
-        },
-        {
-          id: makeId("a"),
-          role: "assistant",
-          tone: "normal",
-          content:
-            "This is a demo chat.\nWhen the API is plugged in, answers will come from the server.",
-          createdAt: new Date().toISOString(),
-        },
-      ],
-    }));
-
-    setActiveChildId(preview.childUserId);
-    setTab("overview");
-    setConnectLoading(false);
-    closeConnect();
   };
 
   /** -----------------------------
-   * Gift
+   * Gift upload/update (REAL API)
+   * POST /parents/gift (form-data)
    * ----------------------------- */
-  const fileInputRef = useRef(null);
   const onPickGift = () => fileInputRef.current?.click();
 
   const onGiftFileChange = (e) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || !activeChildId) return;
+
+    setGiftFileByChild((m) => ({ ...m, [activeChildId]: file }));
+
+    // local preview
     const localUrl = URL.createObjectURL(file);
-    setGift((g) => ({ ...g, imageUrl: localUrl }));
+    setGiftByChild((m) => ({
+      ...m,
+      [activeChildId]: {
+        ...(m[activeChildId] || {}),
+        imageUrl: localUrl,
+      },
+    }));
+  };
+
+  const onGiftCaptionChange = (v) => {
+    if (!activeChildId) return;
+    setGiftByChild((m) => ({
+      ...m,
+      [activeChildId]: {
+        ...(m[activeChildId] || {}),
+        caption: v,
+      },
+    }));
+  };
+
+  const uploadGift = async () => {
+    if (!activeChildId || !userId) return;
+
+    const file = giftFileByChild[activeChildId];
+    const caption = safeStr(giftByChild[activeChildId]?.caption, "");
+
+    if (!file) {
+      setGiftErr("Please choose an image file first.");
+      return;
+    }
+
+    setGiftLoading(true);
+    setGiftErr("");
+
+    try {
+      const fd = new FormData();
+      fd.append("childId", String(activeChildId));
+      fd.append("message", caption);
+      fd.append("image", file);
+
+      const res = await api.post("/parents/gift", fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+
+      setGiftByChild((m) => ({
+        ...m,
+        [activeChildId]: {
+          ...(m[activeChildId] || {}),
+          imageUrl:
+            withApiOrigin(res.data?.imageUrl) ||
+            m[activeChildId]?.imageUrl ||
+            null,
+        },
+      }));
+
+      // refresh canonical
+      try {
+        const refetch = await api.get("/parents/gift", {
+          params: { childId: activeChildId },
+        });
+        setGiftByChild((m) => ({
+          ...m,
+          [activeChildId]: {
+            imageUrl: withApiOrigin(refetch.data?.imageUrl),
+            caption: safeStr(refetch.data?.message, ""),
+            updated_at: safeStr(refetch.data?.updated_at, ""),
+          },
+        }));
+      } catch {}
+    } catch (e) {
+      setGiftErr(
+        e?.response?.data?.message ||
+          e?.response?.data?.detail ||
+          e?.message ||
+          "Failed to upload gift."
+      );
+    } finally {
+      setGiftLoading(false);
+    }
   };
 
   /** -----------------------------
-   * Chat send (SUDO)
+   * Gift delete (REAL API)
+   * DELETE /parents/gift  body: { childId }
    * ----------------------------- */
+  const deleteGift = async () => {
+    if (!activeChildId) return;
+
+    setGiftLoading(true);
+    setGiftErr("");
+
+    try {
+      await api.delete("/parents/gift", {
+        data: { childId: activeChildId },
+      });
+
+      setGiftByChild((m) => ({
+        ...m,
+        [activeChildId]: { imageUrl: null, caption: "", updated_at: "" },
+      }));
+      setGiftFileByChild((m) => {
+        const next = { ...m };
+        delete next[activeChildId];
+        return next;
+      });
+    } catch (e) {
+      setGiftErr(
+        e?.response?.data?.message ||
+          e?.response?.data?.detail ||
+          e?.message ||
+          "Failed to delete gift."
+      );
+    } finally {
+      setGiftLoading(false);
+    }
+  };
+
+  /** -----------------------------
+   * CHAT (NEW API)
+   * POST /parents/chat (multipart)
+   *  - childId, message, image
+   * response: { status: "saved" }
+   * ----------------------------- */
+  const messages = useMemo(() => {
+    return Array.isArray(chatByChild[activeChildId])
+      ? chatByChild[activeChildId]
+      : activeChildId
+      ? [sysMessage]
+      : [];
+  }, [chatByChild, activeChildId, sysMessage]);
+
+  const onChatImageChange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file || !activeChildId) return;
+
+    // cleanup old preview if exists
+    const prevUrl = chatImagePreviewByChild[activeChildId];
+    if (prevUrl) URL.revokeObjectURL(prevUrl);
+
+    const url = URL.createObjectURL(file);
+    setChatImageByChild((m) => ({ ...m, [activeChildId]: file }));
+    setChatImagePreviewByChild((m) => ({ ...m, [activeChildId]: url }));
+  };
+
+  const clearChatImage = () => {
+    if (!activeChildId) return;
+    const prevUrl = chatImagePreviewByChild[activeChildId];
+    if (prevUrl) URL.revokeObjectURL(prevUrl);
+
+    setChatImageByChild((m) => {
+      const next = { ...m };
+      delete next[activeChildId];
+      return next;
+    });
+    setChatImagePreviewByChild((m) => {
+      const next = { ...m };
+      delete next[activeChildId];
+      return next;
+    });
+
+    if (chatFileRef.current) chatFileRef.current.value = "";
+  };
+
   const sendText = async (text) => {
     const t = safeStr(text);
-    if (!t || isTyping || !activeChildId) return;
+    const hasImg = !!chatImageByChild[activeChildId];
 
+    if ((!t && !hasImg) || isTyping || !activeChildId) return;
+
+    setChatErr("");
     setInput("");
-    const now = new Date().toISOString();
 
-    // append parent message
+    const now = new Date().toISOString();
+    const imagePreview = chatImagePreviewByChild[activeChildId] || null;
+
     setChatByChild((m) => ({
       ...m,
       [activeChildId]: [
-        ...(m[activeChildId] || []),
+        ...(m[activeChildId] || [sysMessage]),
         {
           id: makeId("p"),
           role: "parent",
           tone: "normal",
-          content: t,
+          content: t || "(image)",
+          imageUrl: imagePreview, // local preview (blob)
           createdAt: now,
         },
       ],
@@ -580,43 +846,74 @@ export default function ParentCheckinPage() {
 
     setIsTyping(true);
 
-    // fake delay + canned answer (per child slight variation)
-    await new Promise((r) => setTimeout(r, 650));
+    try {
+      const fd = new FormData();
+      fd.append("childId", String(activeChildId));
+      fd.append("message", t);
+      if (hasImg) fd.append("image", chatImageByChild[activeChildId]);
 
-    const answer =
-      activeChildId % 2 === 0
-        ? "In this demo, waiting is considered okay because the overall flow looks stable.\n\nWhen API connects, this will be personalized."
-        : "This demo suggests calm support without pressure.\n\nWhen API connects, you’ll get a tailored explanation.";
+      const res = await api.post("/parents/chat", fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
 
-    const at = new Date().toISOString();
-    setChatByChild((m) => ({
-      ...m,
-      [activeChildId]: [
-        ...(m[activeChildId] || []),
-        {
-          id: makeId("a"),
-          role: "assistant",
-          tone: "normal",
-          content: answer,
-          createdAt: at,
-        },
-      ],
-    }));
+      const status = safeStr(res.data?.status, "saved");
 
-    setIsTyping(false);
+      setChatByChild((m) => ({
+        ...m,
+        [activeChildId]: [
+          ...(m[activeChildId] || [sysMessage]),
+          {
+            id: makeId("ack"),
+            role: "assistant",
+            tone: "system",
+            content: status === "saved" ? "Saved." : `Saved: ${status}`,
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      }));
+
+      clearChatImage();
+    } catch (e) {
+      const msg =
+        e?.response?.data?.message ||
+        e?.response?.data?.detail ||
+        e?.message ||
+        "Chat failed.";
+
+      setChatErr(msg);
+
+      setChatByChild((m) => ({
+        ...m,
+        [activeChildId]: [
+          ...(m[activeChildId] || [sysMessage]),
+          {
+            id: makeId("aerr"),
+            role: "assistant",
+            tone: "system",
+            content: `Request failed.\n${msg}`,
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      }));
+    } finally {
+      setIsTyping(false);
+    }
   };
+
+  // cleanup object URLs on unmount
+  useEffect(() => {
+    return () => {
+      Object.values(chatImagePreviewByChild).forEach((u) => {
+        if (u) URL.revokeObjectURL(u);
+      });
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <PageShell>
       <Panel>
-        <PanelHeader
-          title="Parents · Check-in"
-          right={
-            <div className="text-[12px] font-semibold text-black/45">
-              sudo mode (no API)
-            </div>
-          }
-        />
+        <PanelHeader title="Parents · Check-in" right={null} />
 
         {/* Top bar: child select + connect + tabs */}
         <div className="px-6 py-4 border-b border-black/10 bg-white/28">
@@ -630,7 +927,20 @@ export default function ParentCheckinPage() {
                   children.length ? "Select a child" : "No child linked"
                 }
               />
-              <SoftBtn onClick={openConnect} className="h-10">
+
+              <SoftBtn
+                onClick={() => fetchChildren(userId)}
+                disabled={!userId || childrenLoading}
+                className="h-10"
+              >
+                {childrenLoading ? "Refreshing…" : "↻ Refresh"}
+              </SoftBtn>
+
+              <SoftBtn
+                onClick={openConnect}
+                disabled={!userId}
+                className="h-10"
+              >
                 + Connect
               </SoftBtn>
             </div>
@@ -648,24 +958,39 @@ export default function ParentCheckinPage() {
             </div>
           </div>
 
-          <div className="mt-3 text-[12px] font-semibold text-black/50">
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-[12px] font-semibold text-black/50">
             {activeChild ? (
               <>
-                Viewing:{" "}
-                <span className="font-extrabold text-[#0B2B5B]">
-                  {safeStr(
-                    activeChild.nickname,
-                    `Child #${activeChild.childUserId}`
-                  )}
+                <span>
+                  Viewing:{" "}
+                  <span className="font-extrabold text-[#0B2B5B]">
+                    {safeStr(
+                      activeChild.nickname,
+                      `Child #${activeChild.childUserId}`
+                    )}
+                  </span>
                 </span>
-                <span className="text-black/35"> · </span>
+                <span className="text-black/35">·</span>
                 <span className="text-black/45">
-                  {safeStr(activeChild.email, "")}
+                  {safeStr(activeChild.email)}
                 </span>
+                {activeChild.role ? (
+                  <>
+                    <span className="text-black/35">·</span>
+                    <InlineBadge>{activeChild.role}</InlineBadge>
+                  </>
+                ) : null}
               </>
             ) : (
-              <>Select a child to view interpretation.</>
+              <span>Select a child to view interpretation.</span>
             )}
+
+            {childrenErr ? (
+              <>
+                <span className="text-black/35">·</span>
+                <InlineBadge tone="err">{childrenErr}</InlineBadge>
+              </>
+            ) : null}
           </div>
         </div>
 
@@ -677,17 +1002,33 @@ export default function ParentCheckinPage() {
                 No child selected
               </div>
               <div className="mt-2 text-[13px] font-semibold text-black/55">
-                Connect a child by email, then select them from the top.
+                Connect a child, then select them from the top.
               </div>
-              <div className="mt-4">
+              <div className="mt-4 flex items-center gap-2">
                 <PrimaryBtn onClick={openConnect}>Connect a child</PrimaryBtn>
               </div>
             </div>
           ) : (
             <>
+              {/* OVERVIEW */}
               {tab === "overview" ? (
                 <div className="grid gap-4">
-                  <AccentCard title={assessment.title} icon="✓" accent="green">
+                  <AccentCard
+                    title={assessment.title}
+                    icon="✓"
+                    accent="green"
+                    right={
+                      <div className="flex items-center gap-2">
+                        {interpretLoading ? (
+                          <InlineBadge>Loading…</InlineBadge>
+                        ) : interpretErr ? (
+                          <InlineBadge tone="err">Error</InlineBadge>
+                        ) : (
+                          <InlineBadge tone="ok">Live</InlineBadge>
+                        )}
+                      </div>
+                    }
+                  >
                     <div className="inline-flex rounded-2xl bg-[#B7E27A]/22 px-4 py-3">
                       <div className="text-[16px] sm:text-[18px] font-extrabold text-[#0B2B5B] leading-snug whitespace-pre-line">
                         {assessment.main}
@@ -697,6 +1038,12 @@ export default function ParentCheckinPage() {
                     <div className="mt-3 text-[12px] font-semibold text-black/50">
                       {assessment.sub}
                     </div>
+
+                    {interpretErr ? (
+                      <div className="mt-3">
+                        <InlineBadge tone="err">{interpretErr}</InlineBadge>
+                      </div>
+                    ) : null}
                   </AccentCard>
 
                   <AccentCard
@@ -710,21 +1057,10 @@ export default function ParentCheckinPage() {
                       ))}
                     </ul>
                   </AccentCard>
-
-                  <AccentCard title={phase.title} icon="◌" accent="mint">
-                    <div className="text-[18px] font-extrabold text-[#0B2B5B]">
-                      {phase.main}
-                    </div>
-                    <div className="mt-3 text-[13px] font-semibold text-black/60 leading-relaxed">
-                      • {phase.lines?.[0]}
-                    </div>
-                    <div className="mt-2 text-[13px] font-semibold text-black/60 leading-relaxed">
-                      • {phase.lines?.[1]}
-                    </div>
-                  </AccentCard>
                 </div>
               ) : null}
 
+              {/* GIFT */}
               {tab === "gift" ? (
                 <div className="grid gap-4">
                   <AccentCard
@@ -732,49 +1068,100 @@ export default function ParentCheckinPage() {
                     icon="🎁"
                     accent="yellow"
                     right={
-                      <SoftBtn onClick={onPickGift} className="h-9">
-                        Edit
-                      </SoftBtn>
+                      <div className="flex items-center gap-2">
+                        {giftLoading ? (
+                          <InlineBadge>Loading…</InlineBadge>
+                        ) : gift.imageUrl ? (
+                          <InlineBadge tone="ok">Saved</InlineBadge>
+                        ) : (
+                          <InlineBadge>Empty</InlineBadge>
+                        )}
+                      </div>
                     }
                   >
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div className="rounded-2xl border border-black/10 bg-white/70 overflow-hidden">
-                        <div className="aspect-[4/3] bg-black/5 flex items-center justify-center">
+                        {/* ✅ 이미지 너무 커지는 문제 해결: p-3 + contain */}
+                        <div className="aspect-[4/3] bg-black/5 flex items-center justify-center p-3">
                           {gift.imageUrl ? (
                             <img
                               src={gift.imageUrl}
                               alt="Gift"
-                              className="h-full w-full object-cover"
+                              className="h-full w-full object-contain"
                             />
                           ) : (
                             <div className="text-[12px] font-extrabold text-black/35 px-4 text-center">
-                              Promise gift preview
+                              No gift image yet
                             </div>
                           )}
                         </div>
+
                         <div className="px-4 py-3 border-t border-black/10 text-[12px] font-semibold text-black/55 whitespace-pre-line">
-                          {gift.caption}
+                          {safeStr(gift.caption, "") || "—"}
                         </div>
                       </div>
 
                       <div className="rounded-2xl border border-black/10 bg-white/70 p-4">
-                        <div className="text-[14px] font-extrabold text-[#0B2B5B]">
-                          Message
-                        </div>
-                        <div className="mt-2 text-[13px] font-semibold text-black/60 whitespace-pre-line leading-relaxed">
-                          {gift.caption}
-                        </div>
-
-                        <div className="mt-4 flex items-center gap-2">
-                          <PrimaryBtn onClick={onPickGift} disabled={!userId}>
-                            Upload / Update
-                          </PrimaryBtn>
-                          {!userId ? (
-                            <div className="text-[12px] font-semibold text-black/40">
-                              Login required
-                            </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="text-[14px] font-extrabold text-[#0B2B5B]">
+                            Message
+                          </div>
+                          {gift.updated_at ? (
+                            <InlineBadge>{gift.updated_at}</InlineBadge>
                           ) : null}
                         </div>
+
+                        <textarea
+                          value={safeStr(
+                            giftByChild[activeChildId]?.caption,
+                            ""
+                          )}
+                          onChange={(e) => onGiftCaptionChange(e.target.value)}
+                          placeholder="Write a short message…"
+                          className="mt-3 w-full min-h-[140px] rounded-2xl border border-black/10 bg-white/90 p-4 text-[13px] font-semibold outline-none resize-none"
+                        />
+
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <PrimaryBtn
+                            onClick={onPickGift}
+                            disabled={giftLoading}
+                            className="h-10"
+                          >
+                            Choose image
+                          </PrimaryBtn>
+
+                          <PrimaryBtn
+                            onClick={uploadGift}
+                            disabled={
+                              giftLoading || !giftFileByChild[activeChildId]
+                            }
+                            className="h-10"
+                          >
+                            {giftLoading ? "Uploading…" : "Upload / Update"}
+                          </PrimaryBtn>
+
+                          <SoftBtn
+                            onClick={deleteGift}
+                            disabled={giftLoading || !gift.imageUrl}
+                            className="h-10"
+                          >
+                            Delete
+                          </SoftBtn>
+
+                          {giftFileByChild[activeChildId] ? (
+                            <InlineBadge tone="ok">
+                              file: {giftFileByChild[activeChildId].name}
+                            </InlineBadge>
+                          ) : (
+                            <InlineBadge>no file</InlineBadge>
+                          )}
+                        </div>
+
+                        {giftErr ? (
+                          <div className="mt-3">
+                            <InlineBadge tone="err">{giftErr}</InlineBadge>
+                          </div>
+                        ) : null}
                       </div>
                     </div>
 
@@ -789,17 +1176,14 @@ export default function ParentCheckinPage() {
                 </div>
               ) : null}
 
+              {/* CHAT */}
               {tab === "chat" ? (
                 <div className="grid gap-4">
                   <AccentCard
                     title="Check-in Companion"
                     icon="💬"
                     accent="mint"
-                    right={
-                      <div className="text-[12px] font-semibold text-black/45">
-                        Chat
-                      </div>
-                    }
+                    right={<InlineBadge>Chat</InlineBadge>}
                   >
                     <div className="flex flex-col h-[560px] max-h-[calc(100vh-300px)]">
                       <div
@@ -810,15 +1194,23 @@ export default function ParentCheckinPage() {
                           {messages.map((m) => (
                             <ChatBubble
                               key={m.id}
-                              side={m.role === "parent" ? "right" : "left"}
+                              /* ✅ user(부모)=LEFT, assistant=RIGHT */
+                              side={m.role === "parent" ? "left" : "right"}
                               tone={m.tone}
                               text={m.content}
                               time={formatTimeLabel(m.createdAt)}
+                              imageUrl={m.imageUrl}
                             />
                           ))}
                           {isTyping && <TypingBubble />}
                         </div>
                       </div>
+
+                      {chatErr ? (
+                        <div className="mt-3">
+                          <InlineBadge tone="err">{chatErr}</InlineBadge>
+                        </div>
+                      ) : null}
 
                       <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
                         {suggestions.map((s) => (
@@ -830,26 +1222,81 @@ export default function ParentCheckinPage() {
                         ))}
                       </div>
 
-                      <div className="mt-4 flex gap-3">
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        {chatImageByChild[activeChildId] ? (
+                          <>
+                            <InlineBadge tone="ok">
+                              📎 {chatImageByChild[activeChildId].name}
+                            </InlineBadge>
+                            <SoftBtn onClick={clearChatImage} className="h-9">
+                              Remove
+                            </SoftBtn>
+                          </>
+                        ) : (
+                          <InlineBadge>no image</InlineBadge>
+                        )}
+                      </div>
+
+                      <div className="mt-3 flex gap-3">
+                        <button
+                          type="button"
+                          onClick={() => chatFileRef.current?.click()}
+                          disabled={!activeChildId || isTyping}
+                          className={cn(
+                            "h-12 w-12 rounded-full border border-black/10 bg-white/90 shadow-sm hover:bg-white transition flex items-center justify-center text-[18px] font-extrabold text-[#0B2B5B]",
+                            (!activeChildId || isTyping) && "opacity-50"
+                          )}
+                          title="Attach image"
+                          aria-label="Attach image"
+                        >
+                          📎
+                        </button>
+
+                        <input
+                          ref={chatFileRef}
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={onChatImageChange}
+                        />
+
                         <input
                           value={input}
                           onChange={(e) => setInput(e.target.value)}
-                          onKeyDown={(e) =>
-                            e.key === "Enter" && sendText(input)
-                          }
-                          placeholder="Ask a question…"
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.shiftKey) {
+                              e.preventDefault();
+                              sendText(input);
+                            }
+                          }}
+                          placeholder="Write a message…"
                           className="flex-1 h-12 rounded-full border border-black/10 bg-white/90 px-5 text-[14px] font-semibold outline-none"
                         />
+
                         <PrimaryBtn
                           onClick={() => sendText(input)}
                           disabled={
-                            !safeStr(input) || isTyping || !activeChildId
+                            (!safeStr(input) &&
+                              !chatImageByChild[activeChildId]) ||
+                            isTyping ||
+                            !activeChildId
                           }
                           className="h-12"
                         >
                           Send
                         </PrimaryBtn>
                       </div>
+
+                      {/* ✅ 미리보기 너무 커지는 문제 해결: contain + 낮은 max-h */}
+                      {chatImagePreviewByChild[activeChildId] ? (
+                        <div className="mt-3 overflow-hidden rounded-2xl border border-black/10 bg-white/70 p-2">
+                          <img
+                            src={chatImagePreviewByChild[activeChildId]}
+                            alt="preview"
+                            className="w-full max-h-[160px] object-contain"
+                          />
+                        </div>
+                      ) : null}
                     </div>
                   </AccentCard>
                 </div>
@@ -859,7 +1306,7 @@ export default function ParentCheckinPage() {
         </div>
       </Panel>
 
-      {/* Connect Child Modal (SUDO) */}
+      {/* Connect Child Modal (REAL API) */}
       {connectOpen ? (
         <div className="absolute inset-0 z-50 flex items-center justify-center p-6">
           <div
@@ -869,7 +1316,7 @@ export default function ParentCheckinPage() {
           <div className="relative w-full max-w-[520px] rounded-[26px] border border-black/10 bg-white/90 shadow-xl overflow-hidden">
             <div className="px-6 py-4 border-b border-black/10 flex items-center justify-between">
               <div className="text-[15px] font-extrabold text-[#0B2B5B]">
-                Connect a child (sudo)
+                Connect a child
               </div>
               <SoftBtn onClick={closeConnect} className="h-9">
                 Close
@@ -878,27 +1325,41 @@ export default function ParentCheckinPage() {
 
             <div className="p-6">
               <div className="text-[12px] font-extrabold text-black/55 mb-2">
-                Child email
+                Child ID
               </div>
               <input
-                value={connectEmail}
-                onChange={(e) => setConnectEmail(e.target.value)}
-                placeholder="student@email.com"
+                value={connectChildId}
+                onChange={(e) => setConnectChildId(e.target.value)}
+                placeholder="e.g., 12"
                 className="w-full h-12 rounded-full border border-black/10 bg-white px-5 text-[14px] font-semibold outline-none"
               />
 
-              <div className="mt-3 flex gap-2">
+              <div className="mt-4 text-[12px] font-extrabold text-black/55 mb-2">
+                Connect to email
+              </div>
+              <input
+                value={connectToEmail}
+                onChange={(e) => setConnectToEmail(e.target.value)}
+                placeholder="parent@email.com"
+                className="w-full h-12 rounded-full border border-black/10 bg-white px-5 text-[14px] font-semibold outline-none"
+              />
+
+              <div className="mt-4 flex gap-2">
                 <PrimaryBtn
-                  onClick={doPreview}
-                  disabled={!safeStr(connectEmail) || connectLoading}
+                  onClick={doLink}
+                  disabled={
+                    !safeStr(connectChildId) ||
+                    !safeStr(connectToEmail) ||
+                    connectLoading
+                  }
                   className="h-11"
                 >
-                  {connectLoading ? "Checking…" : "Check"}
+                  {connectLoading ? "Linking…" : "Link"}
                 </PrimaryBtn>
                 <SoftBtn
                   onClick={() => {
-                    setConnectEmail("");
-                    setPreview(null);
+                    setConnectChildId("");
+                    setConnectToEmail("");
                     setConnectErr("");
                   }}
                   disabled={connectLoading}
@@ -909,38 +1370,8 @@ export default function ParentCheckinPage() {
               </div>
 
               {connectErr ? (
-                <div className="mt-3 text-[12px] font-semibold text-red-600/80">
-                  {connectErr}
-                </div>
-              ) : null}
-
-              {preview ? (
-                <div className="mt-5 rounded-2xl border border-black/10 bg-white/80 p-4">
-                  <div className="text-[12px] font-extrabold text-black/55">
-                    Found student (fake)
-                  </div>
-                  <div className="mt-2 text-[14px] font-extrabold text-[#0B2B5B]">
-                    {preview.nickname}
-                    <span className="ml-2 text-[12px] font-semibold text-black/40">
-                      (ID: {preview.childUserId})
-                    </span>
-                  </div>
-                  <div className="mt-1 text-[11px] font-semibold text-black/45">
-                    {preview.email}
-                  </div>
-
-                  <div className="mt-4 flex items-center gap-2">
-                    <PrimaryBtn
-                      onClick={doLink}
-                      disabled={connectLoading}
-                      className="h-11"
-                    >
-                      {connectLoading ? "Linking…" : "Link"}
-                    </PrimaryBtn>
-                    <div className="text-[12px] font-semibold text-black/45">
-                      Adds this child to the dropdown.
-                    </div>
-                  </div>
+                <div className="mt-3">
+                  <InlineBadge tone="err">{connectErr}</InlineBadge>
                 </div>
               ) : null}
             </div>

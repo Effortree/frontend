@@ -9,6 +9,36 @@ import FocusHeader from "@/app/ui/FocusHeader";
 import { api } from "@/lib/api.js";
 
 /** -----------------------------
+ * utils
+ * ----------------------------- */
+function ymd(d = new Date()) {
+  const x = new Date(d);
+  const yyyy = x.getFullYear();
+  const mm = String(x.getMonth() + 1).padStart(2, "0");
+  const dd = String(x.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function toNumberOrNull(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+// ✅ Gift 이미지 URL prefix (고정)
+const GIFT_BASE = "http://168.107.21.74:8000";
+
+// ✅ 컴포넌트 밖에서는 useCallback 쓰면 안됨 (그냥 함수로!)
+function resolveGiftUrl(maybeUrl) {
+  const u = String(maybeUrl ?? "").trim();
+  if (!u) return "";
+  if (/^https?:\/\//i.test(u) || u.startsWith("data:")) return u;
+
+  const base = GIFT_BASE.replace(/\/$/, "");
+  const path = u.startsWith("/") ? u : `/${u}`;
+  return `${base}${path}`;
+}
+
+/** -----------------------------
  * AddQuestPopup (inline)
  * subject(크게) / title(짧게) / description(자세히)
  * ----------------------------- */
@@ -65,7 +95,6 @@ function AddQuestPopup({ open, onClose, onSubmit }) {
             onClick={onClose}
           />
 
-          {/* ✅ 팝업: 정중앙 */}
           <motion.div
             className="fixed inset-0 z-[90] flex items-center justify-center p-5"
             initial={{ opacity: 0, scale: 0.98, y: 10 }}
@@ -207,6 +236,152 @@ function AddQuestPopup({ open, onClose, onSubmit }) {
   );
 }
 
+/** -----------------------------
+ * DonutChart (pure SVG, no deps)
+ * ✅ 더 작게
+ * ----------------------------- */
+function DonutChart({ items }) {
+  const palette = [
+    "#4CAF50",
+    "#7CD96B",
+    "#0B2B5B",
+    "#7AA6FF",
+    "#F2C94C",
+    "#EB5757",
+    "#9B51E0",
+    "#2D9CDB",
+  ];
+
+  const cleaned = useMemo(() => {
+    const arr = Array.isArray(items) ? items : [];
+    const normalized = arr
+      .map((x) => ({
+        subject: String(x?.subject ?? "Unknown"),
+        minutes: Number(x?.minutes ?? 0) || 0,
+        share: x?.share == null ? null : Number(x.share),
+      }))
+      .filter((x) => x.minutes > 0);
+
+    normalized.sort((a, b) => b.minutes - a.minutes);
+    return normalized;
+  }, [items]);
+
+  const total = useMemo(
+    () => cleaned.reduce((s, x) => s + x.minutes, 0),
+    [cleaned]
+  );
+
+  if (!cleaned.length || total <= 0) {
+    return (
+      <div className="h-full w-full flex flex-col items-center justify-center text-black/45">
+        <div className="text-sm font-semibold">No data yet</div>
+        <div className="text-xs mt-1">Start a quest to see distribution</div>
+      </div>
+    );
+  }
+
+  // ✅ 더 작게
+  const size = 96;
+  const cx = size / 2;
+  const cy = size / 2;
+  const r = 32;
+  const stroke = 12;
+  const C = 2 * Math.PI * r;
+
+  let offset = 0;
+
+  const segments = cleaned.map((x, i) => {
+    const frac = x.minutes / total;
+    const len = Math.max(0, frac * C);
+
+    const dasharray = `${len} ${C - len}`;
+    const dashoffset = -offset;
+    offset += len;
+
+    return {
+      ...x,
+      color: palette[i % palette.length],
+      dasharray,
+      dashoffset,
+    };
+  });
+
+  return (
+    <div className="h-full w-full flex items-center justify-center">
+      <div className="flex items-center gap-4 w-full justify-center px-2">
+        {/* donut */}
+        <div className="relative shrink-0">
+          <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+            <circle
+              cx={cx}
+              cy={cy}
+              r={r}
+              fill="none"
+              stroke="rgba(0,0,0,0.08)"
+              strokeWidth={stroke}
+            />
+            <g transform={`rotate(-90 ${cx} ${cy})`}>
+              {segments.map((seg, i) => (
+                <circle
+                  key={`seg-${seg.subject}-${i}`}
+                  cx={cx}
+                  cy={cy}
+                  r={r}
+                  fill="none"
+                  stroke={seg.color}
+                  strokeWidth={stroke}
+                  strokeLinecap="round"
+                  strokeDasharray={seg.dasharray}
+                  strokeDashoffset={seg.dashoffset}
+                />
+              ))}
+            </g>
+          </svg>
+
+          <div className="absolute inset-0 flex flex-col items-center justify-center">
+            <div className="text-sm font-extrabold text-[#0B2B5B]">
+              {total}m
+            </div>
+            <div className="text-[11px] text-black/55 -mt-0.5">total</div>
+          </div>
+        </div>
+
+        {/* legend */}
+        <div className="min-w-[150px] max-w-[200px]">
+          <div className="text-xs font-bold text-black/60 mb-2">By subject</div>
+
+          <div className="flex flex-col gap-1.5">
+            {segments.slice(0, 5).map((seg, idx) => (
+              <div
+                key={`${seg.subject}-legend-${idx}`}
+                className="flex items-center gap-3 text-xs"
+              >
+                <div className="flex items-center gap-2 min-w-0 flex-1">
+                  <span
+                    className="inline-block h-2.5 w-2.5 rounded-full"
+                    style={{ backgroundColor: seg.color }}
+                  />
+                  <span className="truncate text-black/75">{seg.subject}</span>
+                </div>
+
+                <div className="w-[78px] text-right tabular-nums text-black/55 whitespace-nowrap">
+                  {seg.minutes}m
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {segments.length > 5 && (
+            <div className="mt-2 text-[11px] text-black/40">
+              +{segments.length - 5} more
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ✅ QuestList memo
 const QuestList = React.memo(function QuestList({
   quests,
@@ -241,7 +416,7 @@ export default function QuestDashboard() {
   const [mode, setMode] = useState("Daily");
   const [isAddOpen, setIsAddOpen] = useState(false);
 
-  // ✅ 서버에서 받아온 quests를 UI 모델로 들고 있음
+  // ✅ quests
   const [quests, setQuests] = useState([]);
 
   const totalCount = quests.length;
@@ -253,6 +428,10 @@ export default function QuestDashboard() {
     totalCount === 0 ? 0 : Math.round((completedCount / totalCount) * 100);
 
   const isAnyActive = useMemo(() => quests.some((q) => q.active), [quests]);
+  const activeQuestId = useMemo(() => {
+    const a = quests.find((q) => q.active);
+    return a?.id ?? null;
+  }, [quests]);
 
   // Focus timer
   const [focusMs, setFocusMs] = useState(0);
@@ -271,14 +450,12 @@ export default function QuestDashboard() {
   }, [isAnyActive, focusStartAt]);
 
   // -----------------------------
-  // ✅ 서버 <-> UI 매핑 유틸
+  // ✅ 서버 <-> UI 매핑
   // -----------------------------
   const toUiQuest = useCallback((q) => {
-    // 서버: visibility "me-only" | "shared"
-    // UI: "Me-only" | "Shared"
     const uiVisibility = q.visibility === "me-only" ? "Me-only" : "Shared";
     return {
-      id: q.questId, // ✅ UI id = questId
+      id: q.questId,
       subject: q.subject,
       title: q.title,
       description: q.description ?? "",
@@ -312,6 +489,37 @@ export default function QuestDashboard() {
     loadQuests();
   }, [loadQuests]);
 
+  // -----------------------------
+  // ✅ spent logging
+  // -----------------------------
+  const flushSpentFor = useCallback(
+    async (questId) => {
+      const userIdStr = localStorage.getItem("userId");
+      const userId = userIdStr ? Number(userIdStr) : null;
+      if (!userId || Number.isNaN(userId)) return;
+
+      if (!questId) return;
+      if (focusStartAt == null) return;
+
+      const elapsedMs = Date.now() - focusStartAt;
+      if (elapsedMs < 20_000) return;
+
+      const minutes = Math.max(1, Math.round(elapsedMs / 60_000));
+
+      try {
+        await api.post("/quests/spent", {
+          userId,
+          questId,
+          spent_at: ymd(),
+          spent_minutes: minutes,
+        });
+      } catch (e) {
+        console.error("❌ POST /quests/spent failed:", e);
+      }
+    },
+    [focusStartAt]
+  );
+
   const handleStartToggle = useCallback(
     async (id) => {
       const userIdStr = localStorage.getItem("userId");
@@ -324,22 +532,39 @@ export default function QuestDashboard() {
       const target = quests.find((q) => q.id === id);
       if (!target || target.done) return;
 
-      const nextStatus = target.active ? "prepare" : "active";
-
       try {
-        await api.patch("/quests/status", {
-          userId,
-          questId: id, // ✅ id == questId
-          status: nextStatus,
-        });
-        // ✅ 서버 기준 재동기화
+        if (target.active) {
+          await flushSpentFor(target.id);
+          await api.patch("/quests/status", {
+            userId,
+            questId: id,
+            status: "prepare",
+          });
+        } else {
+          const other = quests.find((q) => q.active && !q.done);
+          if (other) {
+            await flushSpentFor(other.id);
+            await api.patch("/quests/status", {
+              userId,
+              questId: other.id,
+              status: "prepare",
+            });
+          }
+
+          await api.patch("/quests/status", {
+            userId,
+            questId: id,
+            status: "active",
+          });
+        }
+
         await loadQuests();
       } catch (e) {
         console.error("❌ PATCH /quests/status failed:", e);
         alert("상태 변경 실패!");
       }
     },
-    [quests, loadQuests]
+    [quests, loadQuests, flushSpentFor]
   );
 
   const handleDone = useCallback(
@@ -351,26 +576,58 @@ export default function QuestDashboard() {
         return;
       }
 
+      const target = quests.find((q) => q.id === id);
+      if (!target) return;
+
       try {
+        if (target.active) {
+          await flushSpentFor(target.id);
+        }
+
         await api.patch("/quests/status", {
           userId,
           questId: id,
           status: "done",
         });
+
         await loadQuests();
       } catch (e) {
         console.error("❌ PATCH /quests/status failed:", e);
         alert("Done 처리 실패!");
       }
     },
-    [loadQuests]
+    [quests, loadQuests, flushSpentFor]
   );
 
-  // stopAll은 기존 UI 동작 유지: "내 화면에서만" stop
-  // (원하면 서버에도 prepare로 일괄 PATCH 하도록 바꿀 수 있음)
-  const stopAll = useCallback(() => {
-    setQuests((qs) => qs.map((q) => (q.active ? { ...q, active: false } : q)));
-  }, []);
+  const stopAll = useCallback(async () => {
+    const userIdStr = localStorage.getItem("userId");
+    const userId = userIdStr ? Number(userIdStr) : null;
+    if (!userId || Number.isNaN(userId)) {
+      alert("로그인이 필요합니다. (userId 없음)");
+      return;
+    }
+
+    const actives = quests.filter((q) => q.active && !q.done);
+    if (actives.length === 0) return;
+
+    try {
+      await Promise.all(
+        actives.map(async (q) => {
+          await flushSpentFor(q.id);
+          await api.patch("/quests/status", {
+            userId,
+            questId: q.id,
+            status: "prepare",
+          });
+        })
+      );
+
+      await loadQuests();
+    } catch (e) {
+      console.error("❌ stopAll failed:", e);
+      alert("Stop 실패!");
+    }
+  }, [quests, flushSpentFor, loadQuests]);
 
   const handleAddQuest = useCallback(
     async (info) => {
@@ -389,7 +646,7 @@ export default function QuestDashboard() {
           description: info.description || "",
           suggested_minutes: info.suggested_minutes,
           deadline: info.deadline,
-          visibility: visibilityToServer(info.visibility), // ✅ "me-only" | "shared"
+          visibility: visibilityToServer(info.visibility),
         });
         await loadQuests();
       } catch (e) {
@@ -399,6 +656,106 @@ export default function QuestDashboard() {
     },
     [loadQuests]
   );
+
+  // -----------------------------
+  // ✅ Analytics
+  // -----------------------------
+  const modeParam = useMemo(() => {
+    const m = String(mode || "").toLowerCase();
+    if (m === "weekly") return "weekly";
+    if (m === "monthly") return "monthly";
+    return "daily";
+  }, [mode]);
+
+  const [summary, setSummary] = useState({
+    achievement_rate: 0,
+    total_actual_minutes: 0,
+    total_planned_minutes: 0,
+  });
+  const [subjects, setSubjects] = useState([]);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+
+  const loadAnalytics = useCallback(async () => {
+    const userIdStr = localStorage.getItem("userId");
+    const userId = userIdStr ? Number(userIdStr) : null;
+    if (!userId || Number.isNaN(userId)) return;
+
+    setAnalyticsLoading(true);
+    try {
+      const [sumRes, subRes] = await Promise.all([
+        api.get("/analytics/summary", { params: { userId, mode: modeParam } }),
+        api.get("/analytics/subjects", { params: { userId, mode: modeParam } }),
+      ]);
+
+      const s = sumRes?.data ?? {};
+      setSummary({
+        achievement_rate: Number(s.achievement_rate ?? 0) || 0,
+        total_actual_minutes: Number(s.total_actual_minutes ?? 0) || 0,
+        total_planned_minutes: Number(s.total_planned_minutes ?? 0) || 0,
+      });
+
+      const arr = Array.isArray(subRes?.data) ? subRes.data : [];
+      setSubjects(arr);
+    } catch (e) {
+      console.error("❌ analytics load failed:", e);
+      setSubjects([]);
+      setSummary({
+        achievement_rate: 0,
+        total_actual_minutes: 0,
+        total_planned_minutes: 0,
+      });
+    } finally {
+      setAnalyticsLoading(false);
+    }
+  }, [modeParam]);
+
+  useEffect(() => {
+    loadAnalytics();
+  }, [loadAnalytics]);
+
+  // -----------------------------
+  // ✅ Gift API
+  // -----------------------------
+  const [gift, setGift] = useState({
+    childId: null,
+    imageUrl: "",
+    message: "",
+    updated_at: "",
+  });
+  const [giftLoading, setGiftLoading] = useState(false);
+
+  const loadGift = useCallback(async () => {
+    const childIdStr = localStorage.getItem("childId");
+    const userIdStr = localStorage.getItem("userId");
+
+    const childId =
+      (childIdStr && Number(childIdStr)) ||
+      (userIdStr && Number(userIdStr)) ||
+      null;
+
+    if (!childId || Number.isNaN(childId)) return;
+
+    setGiftLoading(true);
+    try {
+      const res = await api.get("/parents/gift", { params: { childId } });
+      const g = res?.data ?? {};
+      setGift({
+        childId: g.childId ?? childId,
+        imageUrl: resolveGiftUrl(g.imageUrl), // ✅ prefix 적용
+        message: String(g.message ?? ""),
+        updated_at: String(g.updated_at ?? ""),
+      });
+    } catch (e) {
+      console.error("❌ GET /parents/gift failed:", e);
+      setGift({ childId: null, imageUrl: "", message: "", updated_at: "" });
+    } finally {
+      setGiftLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadGift();
+  }, [loadGift]);
 
   return (
     <div className="relative w-full overflow-hidden h-[calc(100vh-72px)]">
@@ -415,10 +772,8 @@ export default function QuestDashboard() {
 
       <div className="relative mx-auto h-full w-full max-w-6xl px-6 py-6">
         <div className="h-full rounded-[32px] border border-white/40 bg-white/65 backdrop-blur-md shadow-soft overflow-hidden">
-          {/* ✅ min-h-0 중요: 내부 overflow가 동작하게 */}
           <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[1fr_360px]">
             {/* LEFT */}
-            {/* ✅ relative + min-h-0 + flex-col: 버튼 고정 + 스크롤 동작 */}
             <div className="relative p-6 h-full min-h-0 flex flex-col">
               <FocusHeader
                 running={isAnyActive}
@@ -427,7 +782,6 @@ export default function QuestDashboard() {
                 startAt={focusStartAt}
               />
 
-              {/* Progress */}
               <div className="mt-5 rounded-2xl border border-black/10 bg-white/55 p-4">
                 <div className="flex items-center justify-between">
                   <div className="text-sm font-bold text-[#0B2B5B]">
@@ -459,7 +813,6 @@ export default function QuestDashboard() {
                 </span>
               </button>
 
-              {/* ✅ Quest list: 여기만 스크롤 (pb-24로 버튼에 가림 방지) */}
               <div className="min-h-0 flex-1 overflow-y-auto pr-1 pb-24">
                 <QuestList
                   quests={quests}
@@ -489,35 +842,73 @@ export default function QuestDashboard() {
                 </Tab>
               </div>
 
+              {/* My Progress */}
               <div className="mt-4 rounded-2xl border border-black/10 bg-white/60 p-4 shadow-sm">
                 <div className="text-sm font-extrabold text-[#0B2B5B]">
                   My Progress
                 </div>
-                <div className="mt-3 aspect-[16/9] w-full rounded-xl bg-white/70 border border-black/10 flex items-center justify-center text-black/40">
-                  chart placeholder
+
+                <div className="mt-3 w-full min-h-[140px] rounded-xl bg-white/70 border border-black/10 flex items-center justify-center overflow-hidden px-2">
+                  {analyticsLoading ? (
+                    <div className="text-black/45 text-sm">Loading...</div>
+                  ) : (
+                    <DonutChart items={subjects} />
+                  )}
                 </div>
-                <div className="mt-3 flex justify-between text-sm">
-                  <div className="text-black/70">
-                    <span className="font-extrabold text-[#0B2B5B]">52</span>{" "}
-                    mins
+
+                <div className="mt-3 space-y-1.5 text-sm">
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-black/60">Achievement rate</span>
+                    <span className="font-extrabold text-[#0B2B5B]">
+                      {Math.round(summary.achievement_rate)}%
+                    </span>
                   </div>
-                  <div className="text-black/70">
-                    <span className="font-extrabold text-[#0B2B5B]">4</span>{" "}
-                    days
+
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-black/60">Studied time</span>
+                    <span className="font-extrabold text-[#0B2B5B]">
+                      {summary.total_actual_minutes} mins
+                    </span>
                   </div>
-                  <div className="text-black/70">
-                    +<span className="font-extrabold text-[#0B2B5B]">24</span>{" "}
-                    pts
+
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-black/60">Planned time</span>
+                    <span className="font-extrabold text-[#0B2B5B]">
+                      {summary.total_planned_minutes} mins
+                    </span>
                   </div>
                 </div>
               </div>
 
+              {/* Gift */}
               <div className="mt-4 rounded-2xl border border-black/10 bg-[#4CAF50]/15 p-4 shadow-sm">
                 <div className="text-base font-extrabold text-[#0B2B5B]">
                   Reward of this month
                 </div>
-                <div className="mt-3 aspect-square w-full rounded-2xl bg-white/70 border border-black/10 flex items-center justify-center text-black/40">
-                  reward image
+
+                <div className="mt-2 text-sm text-black/65 leading-snug min-h-[22px]">
+                  {giftLoading ? (
+                    <span className="text-black/45">Loading...</span>
+                  ) : gift.message ? (
+                    gift.message
+                  ) : (
+                    <span className="text-black/40">No message yet 🌱</span>
+                  )}
+                </div>
+
+                <div className="mt-3 aspect-square w-full rounded-2xl bg-white/70 border border-black/10 overflow-hidden flex items-center justify-center">
+                  {giftLoading ? (
+                    <div className="text-black/40">Loading image...</div>
+                  ) : gift.imageUrl ? (
+                    <img
+                      src={gift.imageUrl}
+                      alt="gift"
+                      className="h-full w-full object-cover"
+                      loading="lazy"
+                    />
+                  ) : (
+                    <div className="text-black/40">gift image</div>
+                  )}
                 </div>
               </div>
             </aside>
